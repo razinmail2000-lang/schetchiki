@@ -1,8 +1,8 @@
 /* Офлайн-кэш: приложение работает на объекте без интернета.
    При обновлении файлов увеличьте VERSION. */
-const VERSION = 'meters-v1.5.0';
+const VERSION = 'meters-v1.5.1';
 const SHELL = [
-  './', 'index.html', 'app.js', 'manifest.webmanifest',
+  './', 'index.html', 'app.js', 'pass.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png',
   'lib/exceljs.min.js', 'lib/jszip.min.js',
   'lib/tesseract/tesseract.min.js', 'lib/tesseract/worker.min.js', 'lib/tesseract/lang/eng.traineddata.gz',
@@ -17,8 +17,8 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
-  // index/app.js — сначала сеть (чтобы приходили обновления), без сети — из кэша; остальное — из кэша
-  const fresh = /\/(index\.html|app\.js)?$/.test(new URL(req.url).pathname);
+  // index/app.js/pass.js — сначала сеть (обновления и новый пароль), без сети — из кэша; остальное — из кэша
+  const fresh = /\/(index\.html|app\.js|pass\.js)?$/.test(new URL(req.url).pathname);
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);
     if (fresh) {

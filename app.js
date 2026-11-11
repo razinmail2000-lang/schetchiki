@@ -2,7 +2,7 @@
 /* Сбор счётчиков — веб-приложение для монтажника.
    Данные хранятся в localStorage телефона; выгрузка — Excel (ExcelJS) в формате «Таблица счётчиков». */
 
-const APP_VER = '1.5.0';
+const APP_VER = '1.5.1';
 const RES = ['Тепло', 'ГВС', 'ХВС', 'Электро'];
 const TABLE_NO = { 'Тепло': 1, 'ГВС': 2, 'ХВС': 3, 'Электро': 4 };
 const CHAN_TABLE_NO = 5;
@@ -1210,10 +1210,11 @@ function init() {
   }
 }
 /* ---------------- пароль на вход ----------------
-   Проверка в браузере (PBKDF2-SHA256, 200 000 итераций); в коде хранится только соль и хеш.
-   Это защита от случайного доступа: сайт статический и код открыт, данные на телефоне не шифруются.
-   Сменить пароль: пересчитать salt/hash (build: hashlib.pbkdf2_hmac) и выложить новую версию. */
-const PASS = { salt: '594c4e648263180e0f49138cbff73b2d', hash: 'aea18f798a29ebf55827c131f42cba60431617e6af150b56842b746ed4be0477', iter: 200000 };
+   Пароль задаётся в файле Password.txt (рядом с папкой app, на сайт НЕ выкладывается).
+   Скрипт публикации deploy_pages.ps1 считает из него PBKDF2-SHA256 (200 000 итераций)
+   и пишет в app/pass.js только соль и хеш → window.APP_PASS. Проверка — в браузере.
+   Это защита от случайного доступа: сайт статический и код открыт, данные на телефоне не шифруются. */
+const PASS = window.APP_PASS || null;
 const hexBytes = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
 const bytesHex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
 async function passOk(p) {
@@ -1228,8 +1229,9 @@ function unlock() {
   if (!started) { started = true; init(); }
 }
 function startLock() {
-  try { if (sessionStorage.getItem('unlocked') === PASS.hash) return unlock(); } catch (e) { }
   const inp = $('lockPwd'), msg = $('lockMsg');
+  if (!PASS) { msg.textContent = 'Не загружен файл пароля (pass.js). Откройте приложение с интернетом.'; msg.className = 'bad'; return; }
+  try { if (sessionStorage.getItem('unlocked') === PASS.hash) return unlock(); } catch (e) { }
   let fails = 0;
   if (!(window.crypto && crypto.subtle)) { msg.textContent = 'Откройте приложение по адресу https://…'; msg.className = 'bad'; return; }
   $('lockForm').onsubmit = async e => {
