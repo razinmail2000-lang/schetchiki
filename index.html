@@ -67,7 +67,8 @@ table.list td.n{font-variant-numeric:tabular-nums;font-weight:600}
 table.list tr.emp td.n{color:var(--warn)}
 table.list tr.dup td.n{color:var(--bad)}
 table.list tr{cursor:pointer}
-.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.stat{min-width:0;overflow:hidden}
 .stat{background:var(--bg);border-radius:10px;padding:8px;text-align:center}
 .stat b{display:block;font-size:18px}
 .stack>*+*{margin-top:8px}
@@ -113,10 +114,29 @@ dialog h3{margin:0 0 8px;font-size:17px}
 #photoView{position:fixed;inset:0;z-index:40;background:#000e;display:none;align-items:center;justify-content:center}
 #photoView.on{display:flex}
 #photoView img{max-width:100%;max-height:100%;object-fit:contain}
+#lock{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:16px}
+body.unlocked #lock{display:none}
+body:not(.unlocked)>header,body:not(.unlocked)>main,body:not(.unlocked)>nav{visibility:hidden}
+.lockbox{width:100%;max-width:320px;text-align:center;display:flex;flex-direction:column;gap:12px}
+.lockbox img{align-self:center;border-radius:16px}
+.lockbox h2{margin:0;font-size:20px}
+.lockbox input{text-align:center;font-size:22px;letter-spacing:4px}
+#lockMsg{min-height:20px}
+#lockMsg.bad{color:var(--bad)}
 small.ver{display:block;text-align:center;color:var(--muted);margin:16px 0}
 </style>
 </head>
 <body>
+<div id="lock">
+  <form class="lockbox" id="lockForm" autocomplete="on">
+    <img src="icons/icon-192.png" alt="" width="72" height="72">
+    <h2>Сбор счётчиков</h2>
+    <input type="text" name="username" value="montazhnik" autocomplete="username" hidden>
+    <input id="lockPwd" type="password" inputmode="numeric" autocomplete="current-password" placeholder="Пароль" aria-label="Пароль">
+    <button class="pri" id="lockBtn" type="submit">Войти</button>
+    <div id="lockMsg" class="muted"></div>
+  </form>
+</div>
 <header>
   <h1 id="hdrTitle">Сбор счётчиков</h1>
   <div class="sub" id="hdrSub">—</div>
@@ -255,6 +275,7 @@ small.ver{display:block;text-align:center;color:var(--muted);margin:16px 0}
     <button id="btnBackup" style="width:100%">Резервная копия (JSON)</button>
     <button id="btnRestore" style="width:100%">Восстановить из копии</button>
     <input type="file" id="restoreInput" accept=".json,application/json" hidden>
+    <button id="btnLock" style="width:100%">Заблокировать приложение (выход)</button>
     <button class="bad" id="btnClear" style="width:100%">Очистить все данные</button>
   </div>
   <small class="ver" id="verInfo"></small>

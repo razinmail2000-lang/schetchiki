@@ -2,9 +2,10 @@
 /* Сбор счётчиков — веб-приложение для монтажника.
    Данные хранятся в localStorage телефона; выгрузка — Excel (ExcelJS) в формате «Таблица счётчиков». */
 
-const APP_VER = '1.4.0';
-const RES = ['Тепло', 'ГВС', 'ХВС'];
-const TABLE_NO = { 'Тепло': 1, 'ГВС': 2, 'ХВС': 3 };
+const APP_VER = '1.5.0';
+const RES = ['Тепло', 'ГВС', 'ХВС', 'Электро'];
+const TABLE_NO = { 'Тепло': 1, 'ГВС': 2, 'ХВС': 3, 'Электро': 4 };
+const CHAN_TABLE_NO = 5;
 const KEY = 'meters.v1';
 const $ = id => document.getElementById(id);
 const abs = p => new URL(p, location.href).href;
@@ -14,7 +15,8 @@ const DEF = {
   addr: '', worker: '',
   blds: ['Дом'], // подсказки для поля «Строение» (адрес / ЖК); секция выбирается отдельно
   types: ['Квартира', 'Офис', 'Ресторан', 'Фитнес', 'Мед.кабинет', 'МОП', 'ПУИ', 'С/У', 'Душевая'],
-  masks: { 'Тепло': '########', 'ГВС': '##_#######?', 'ХВС': '##_#######?' },
+  // Электро: типы счётчиков разные (8–15 цифр) — по умолчанию без маски, любое число от 6 цифр
+  masks: { 'Тепло': '########', 'ГВС': '##_#######?', 'ХВС': '##_#######?', 'Электро': '' },
   pad: 3, sort: 'num', scanMode: 'auto',
   bldAddr: {}, // строение → адрес для строки 1 Excel (из загруженного файла)
   recs: [], channels: [], ord: 0,
@@ -643,7 +645,7 @@ async function buildWorkbook(recsAll = S.recs, bname = null) {
       if (r - r0 > 1) { ws.mergeCells(r0, 1, r - 1, 1); ws.mergeCells(r0, 2, r - 1, 2); }
     });
   }
-  const ws = setupSheet(wb, 'Каналы', 'Таблица 4 — Каналы УСПД', CHAN_HDR, addr);
+  const ws = setupSheet(wb, 'Каналы', `Таблица ${CHAN_TABLE_NO} — Каналы УСПД`, CHAN_HDR, addr);
   S.channels.forEach((ch, i) => styleRow(ws, 4 + i, ch));
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -1182,6 +1184,11 @@ function bind() {
       S = Object.assign(JSON.parse(JSON.stringify(DEF)), s); save(); renderFile(); toast('Восстановлено');
     } catch (er) { $('fileMsg').innerHTML = `<div class="msg bad">Ошибка: ${esc(er.message)}</div>`; }
   };
+  $('btnLock').onclick = () => {
+    readSettings();
+    try { sessionStorage.removeItem('unlocked'); } catch (e) { }
+    location.reload();
+  };
   $('btnClear').onclick = async () => {
     if (!await ask('Очистить всё?', `Будут удалены все <b>${S.recs.length}</b> записей. Настройки сохранятся.<br>Перед этим лучше выгрузить Excel.`, 'Удалить всё')) return;
     S.recs = []; S.channels = []; S.ord = 0; await PDB.clear().catch(() => { }); save(); renderFile(); toast('Данные и фото очищены');
@@ -1202,4 +1209,40 @@ function init() {
     setTimeout(() => getOcr().then(() => { if (curView === 'file') renderFile(); }).catch(() => { }), 3000);
   }
 }
-window.addEventListener('DOMContentLoaded', init);
+/* ---------------- пароль на вход ----------------
+   Проверка в браузере (PBKDF2-SHA256, 200 000 итераций); в коде хранится только соль и хеш.
+   Это защита от случайного доступа: сайт статический и код открыт, данные на телефоне не шифруются.
+   Сменить пароль: пересчитать salt/hash (build: hashlib.pbkdf2_hmac) и выложить новую версию. */
+const PASS = { salt: '594c4e648263180e0f49138cbff73b2d', hash: 'aea18f798a29ebf55827c131f42cba60431617e6af150b56842b746ed4be0477', iter: 200000 };
+const hexBytes = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
+const bytesHex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+async function passOk(p) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(p), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: hexBytes(PASS.salt), iterations: PASS.iter }, key, 256);
+  return bytesHex(bits) === PASS.hash;
+}
+let started = false;
+function unlock() {
+  document.body.classList.add('unlocked');
+  try { sessionStorage.setItem('unlocked', PASS.hash); } catch (e) { }
+  if (!started) { started = true; init(); }
+}
+function startLock() {
+  try { if (sessionStorage.getItem('unlocked') === PASS.hash) return unlock(); } catch (e) { }
+  const inp = $('lockPwd'), msg = $('lockMsg');
+  let fails = 0;
+  if (!(window.crypto && crypto.subtle)) { msg.textContent = 'Откройте приложение по адресу https://…'; msg.className = 'bad'; return; }
+  $('lockForm').onsubmit = async e => {
+    e.preventDefault();
+    const p = inp.value.trim(); if (!p) return;
+    $('lockBtn').disabled = true; msg.className = 'muted'; msg.textContent = 'Проверка…';
+    const ok = await passOk(p).catch(() => false);
+    if (ok) { inp.value = ''; msg.textContent = ''; $('lockBtn').disabled = false; unlock(); return; }
+    fails++;
+    msg.className = 'bad'; msg.textContent = 'Неверный пароль';
+    inp.value = '';
+    setTimeout(() => { $('lockBtn').disabled = false; inp.focus(); }, Math.min(fails, 10) * 1000); // пауза растёт с каждой ошибкой
+  };
+  setTimeout(() => inp.focus(), 100);
+}
+window.addEventListener('DOMContentLoaded', startLock);

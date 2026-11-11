@@ -1,6 +1,6 @@
 /* Офлайн-кэш: приложение работает на объекте без интернета.
    При обновлении файлов увеличьте VERSION. */
-const VERSION = 'meters-v1.4.0';
+const VERSION = 'meters-v1.5.0';
 const SHELL = [
   './', 'index.html', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png',
