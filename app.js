@@ -2,7 +2,7 @@
 /* Сбор счётчиков — веб-приложение для монтажника.
    Данные хранятся в localStorage телефона; выгрузка — Excel (ExcelJS) в формате «Таблица счётчиков». */
 
-const APP_VER = '1.3.0';
+const APP_VER = '1.4.0';
 const RES = ['Тепло', 'ГВС', 'ХВС'];
 const TABLE_NO = { 'Тепло': 1, 'ГВС': 2, 'ХВС': 3 };
 const KEY = 'meters.v1';
@@ -16,6 +16,7 @@ const DEF = {
   types: ['Квартира', 'Офис', 'Ресторан', 'Фитнес', 'Мед.кабинет', 'МОП', 'ПУИ', 'С/У', 'Душевая'],
   masks: { 'Тепло': '########', 'ГВС': '##_#######?', 'ХВС': '##_#######?' },
   pad: 3, sort: 'num', scanMode: 'auto',
+  bldAddr: {}, // строение → адрес для строки 1 Excel (из загруженного файла)
   recs: [], channels: [], ord: 0,
   cur: { res: 'Тепло', bld: 'Дом-Секция 1', type: 'Квартира', name: '001' },
 };
@@ -198,7 +199,8 @@ async function stampPhoto(blob, r) {
     const fs = Math.max(16, Math.round(c.width / 38));
     const d = new Date(r.ts || Date.now());
     const lines = [`${r.res} · ${r.bld} · ${placeLabel(r)}`, `№ ${r.num || '—'} · ${d.toLocaleString('ru-RU')}${S.worker ? ' · ' + S.worker : ''}`];
-    if (S.addr) lines.unshift(S.addr);
+    const ad = sheetAddr(bldNameOf(r));
+    if (ad && ad !== bldNameOf(r)) lines.unshift(ad);
     const h = Math.round(fs * 1.35 * lines.length + fs * 0.6);
     g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(0, c.height - h, c.width, h);
     g.fillStyle = '#fff'; g.font = `600 ${fs}px system-ui, sans-serif`; g.textBaseline = 'top';
@@ -222,13 +224,16 @@ function viewPhoto(url) { $('photoViewImg').src = url; $('photoView').classList.
 
 /* ---------------- шапка / вкладки ---------------- */
 function renderHeader() {
-  $('hdrTitle').textContent = S.addr || 'Сбор счётчиков';
+  // шапка — по текущему строению (адрес / ЖК): у каждого строения свой Excel
+  const b = splitBld(S.cur.bld).name, nb = buildingNames().length;
+  $('hdrTitle').textContent = sheetAddr(b) || 'Сбор счётчиков';
+  const mine = S.recs.filter(r => bldNameOf(r) === b);
   const parts = RES.map(res => {
-    const all = S.recs.filter(r => r.res === res);
+    const all = mine.filter(r => r.res === res);
     if (!all.length) return null;
     return `${res} ${all.filter(r => r.num).length}/${all.length}`;
   }).filter(Boolean);
-  $('hdrSub').textContent = parts.length ? parts.join(' · ') : 'записей пока нет';
+  $('hdrSub').textContent = (parts.length ? parts.join(' · ') : 'в этом строении записей нет') + (nb > 1 ? ` · строений: ${nb}` : '');
 }
 let curView = 'input';
 function showView(v) {
@@ -554,6 +559,7 @@ function renderFile() {
   $('maskBox').innerHTML = RES.map(r => `<label>${r}</label><input data-mask="${r}" value="${esc(S.masks[r] || '')}" spellcheck="false" autocapitalize="off">`).join('');
   $('sBlds').value = S.blds.join('\n'); $('sTypes').value = S.types.join('\n');
   $('sPad').value = String(S.pad); $('sSort').value = S.sort;
+  renderExpBld();
   const ocr = localStorage.getItem('ocrReady');
   $('verInfo').textContent = `Версия ${APP_VER} · записей ${S.recs.length} · распознавание: ${ocr ? 'загружено, работает без интернета' : 'ещё не загружено'}`;
 }
@@ -566,12 +572,20 @@ function readSettings() {
   S.pad = parseInt($('sPad').value, 10) || 0; S.sort = $('sSort').value;
   save();
 }
-function fileName() {
+const safeName = s => String(s || '').replace(/[\\/:*?"<>|№,]+/g, ' ').replace(/\s+/g, '_').replace(/^_|_$/g, '').slice(0, 50);
+function fileName(bname) {
   const d = new Date(), z = n => String(n).padStart(2, '0');
-  const parts = ['Счетчики', S.addr, `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}`, S.worker]
-    .filter(Boolean).map(s => s.replace(/[\\/:*?"<>|№,]+/g, ' ').replace(/\s+/g, '_').replace(/^_|_$/g, '').slice(0, 40));
+  const parts = ['Счетчики', bname || S.addr, `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}`, S.worker]
+    .filter(Boolean).map(safeName);
   return parts.join('_') + '.xlsx';
 }
+/* «Строение (адрес / ЖК)» без секции — по нему выгрузка делится на отдельные файлы */
+const bldNameOf = r => splitBld(r.bld).name;
+function buildingNames(recs = S.recs) {
+  return [...new Set(recs.map(bldNameOf))].sort((a, b) => (a === '') - (b === '') || natCmp(a, b));
+}
+/* строка 1 таблицы: адрес из загруженного файла для этого строения, иначе само строение, иначе адрес по умолчанию */
+const sheetAddr = bname => (S.bldAddr && S.bldAddr[bname]) || bname || S.addr || '';
 
 const FONT = 'Times New Roman';
 const THIN = { style: 'thin', color: { argb: 'FF000000' } };
@@ -581,14 +595,14 @@ const WIDTHS = [9, 24, 12, 12, 24, 18];
 const METER_HDR = ['№ поз.', 'Тип места', 'Имя места', 'Ресурс', 'Сетевой адрес', 'Строение'];
 const CHAN_HDR = ['№ канала.', 'Тип места', 'Порт', 'Ресурс', 'Сетевой адрес', 'Строение'];
 
-function setupSheet(wb, name, title, header) {
+function setupSheet(wb, name, title, header, addr) {
   const ws = wb.addWorksheet(name, {
     views: [{ state: 'frozen', ySplit: 3 }],
     pageSetup: { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true, printTitlesRow: '3:3', margins: { left: 0.5, right: 0.5, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 } },
   });
   ws.columns = WIDTHS.map(w => ({ width: w }));
   ws.mergeCells('A1:F1');
-  Object.assign(ws.getCell('A1'), { value: S.addr || '', font: { name: FONT, size: 12, bold: true }, alignment: { horizontal: 'center', vertical: 'middle' } });
+  Object.assign(ws.getCell('A1'), { value: addr || '', font: { name: FONT, size: 12, bold: true }, alignment: { horizontal: 'center', vertical: 'middle' } });
   ws.mergeCells('A2:F2');
   Object.assign(ws.getCell('A2'), { value: title, font: { name: FONT, size: 12, bold: true }, alignment: { horizontal: 'left', vertical: 'middle' } });
   const hr = ws.getRow(3); hr.height = 30;
@@ -606,12 +620,14 @@ function styleRow(ws, r, vals) {
     cell.font = { name: FONT, size: 11 }; cell.alignment = CENTER; cell.border = BORDER; cell.numFmt = '@';
   }
 }
-async function buildWorkbook() {
+/* one Excel per building: recsAll — записи этого строения, bname — его имя */
+async function buildWorkbook(recsAll = S.recs, bname = null) {
+  const addr = bname == null ? S.addr : sheetAddr(bname);
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Сбор счётчиков ' + APP_VER; wb.created = new Date();
   for (const res of RES) {
-    const ws = setupSheet(wb, res, `Таблица ${TABLE_NO[res]} — ${res}`, METER_HDR);
-    const recs = sortRecs(S.recs.filter(x => x.res === res));
+    const ws = setupSheet(wb, res, `Таблица ${TABLE_NO[res]} — ${res}`, METER_HDR, addr);
+    const recs = sortRecs(recsAll.filter(x => x.res === res));
     const groups = [];
     for (const x of recs) {
       const g = groups[groups.length - 1];
@@ -627,7 +643,7 @@ async function buildWorkbook() {
       if (r - r0 > 1) { ws.mergeCells(r0, 1, r - 1, 1); ws.mergeCells(r0, 2, r - 1, 2); }
     });
   }
-  const ws = setupSheet(wb, 'Каналы', 'Таблица 4 — Каналы УСПД', CHAN_HDR);
+  const ws = setupSheet(wb, 'Каналы', 'Таблица 4 — Каналы УСПД', CHAN_HDR, addr);
   S.channels.forEach((ch, i) => styleRow(ws, 4 + i, ch));
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -638,48 +654,70 @@ function download(blob, name) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
-/* ZIP: Excel + папка «Фото» с говорящими именами */
-async function buildZip(xlsx, xlsxName, progress) {
-  const zip = new JSZip();
-  zip.file(xlsxName, xlsx);
-  const dir = zip.folder('Фото'), used = new Map();
-  let n = 0;
+/* фото записей recs → в папку dir архива, с говорящими именами */
+async function addPhotos(dir, recs, used, progress, cnt) {
   for (const res of RES) {
-    for (const r of sortRecs(S.recs.filter(x => x.res === res && x.photo))) {
+    for (const r of sortRecs(recs.filter(x => x.res === res && x.photo))) {
       const b = await PDB.get(r.id).catch(() => null);
       if (!b) continue;
       let base = photoBase(r); const k = used.get(base) || 0; used.set(base, k + 1);
       if (k) base += '_' + (k + 1);
       dir.file(base + '.jpg', b, { binary: true });
-      n++; if (progress && n % 20 === 0) progress(n);
+      cnt.n++; if (progress && cnt.n % 20 === 0) progress(cnt.n);
     }
   }
+}
+/* Выгрузка: на каждое строение (адрес / ЖК) — свой Excel и своя папка «Фото».
+   Одно строение: Excel (или ZIP: Excel + Фото/). Несколько: ZIP с папкой на каждое строение. */
+async function buildExport(names, withPhotos, progress) {
+  // имя файла: строение, а если для него есть адрес из загруженного файла — адрес + строение
+  const xName = b => { const a = sheetAddr(b); return fileName(b && a && a !== b ? `${a} ${b}` : (b || null)); };
+  const parts = names.map(b => ({ b, recs: S.recs.filter(r => bldNameOf(r) === b) })).filter(p => p.recs.length);
+  if (parts.length === 1 && !withPhotos) {
+    const p = parts[0];
+    return { blob: await buildWorkbook(p.recs, p.b), name: xName(p.b), files: 1 };
+  }
+  const zip = new JSZip(), cnt = { n: 0 };
+  for (const p of parts) {
+    const xname = xName(p.b);
+    const dir = parts.length === 1 ? zip : zip.folder(safeName(p.b) || 'Без_строения');
+    dir.file(xname, await buildWorkbook(p.recs, p.b));
+    if (withPhotos) await addPhotos(dir.folder('Фото'), p.recs, new Map(), progress, cnt);
+  }
+  const zname = parts.length === 1 ? xName(parts[0].b) : fileName(parts.length + '_строения');
   const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE', mimeType: 'application/zip' });
-  return { blob, n };
+  return { blob, name: zname.replace(/\.xlsx$/, '.zip'), files: parts.length, photos: cnt.n };
+}
+function renderExpBld() {
+  const sel = $('expBld'), v = sel.value, names = buildingNames();
+  const cnt = b => S.recs.filter(r => bldNameOf(r) === b).length;
+  sel.innerHTML = (names.length > 1 ? `<option value="*">Все строения — отдельный Excel на каждое (${names.length})</option>` : '') +
+    names.map(b => `<option value="${esc(b)}">${esc(b || 'без строения')} (записей: ${cnt(b)})</option>`).join('');
+  if ([...sel.options].some(o => o.value === v)) sel.value = v;
+  $('expInfo').textContent = names.length > 1 ? 'Каждое строение (адрес / ЖК) выгружается отдельным Excel со своими фото.' : '';
 }
 async function doExport(share, withPhotos) {
   readSettings();
   if (!S.recs.length) { toast('Нет записей для выгрузки'); return; }
-  const empty = S.recs.filter(r => !r.num).length, dm = dupMap();
-  const dups = S.recs.filter(r => r.num && dm.get(r.num) > 1).length;
-  const noPhoto = withPhotos ? S.recs.filter(r => r.num && !r.photo).length : 0;
+  const sv = $('expBld').value, names = sv === '*' || sv == null ? buildingNames() : [sv];
+  const scope = S.recs.filter(r => names.includes(bldNameOf(r)));
+  const empty = scope.filter(r => !r.num).length, dm = dupMap();
+  const dups = scope.filter(r => r.num && dm.get(r.num) > 1).length;
+  const noPhoto = withPhotos ? scope.filter(r => r.num && !r.photo).length : 0;
   if ((empty || dups || noPhoto) && !await ask('Проверка перед выгрузкой', `${empty ? `Без номера: <b>${empty}</b><br>` : ''}${dups ? `Повторяющихся номеров: <b>${dups}</b><br>` : ''}${noPhoto ? `С номером, но без фото: <b>${noPhoto}</b><br>` : ''}<br>Выгрузить как есть?`, 'Выгрузить')) return;
   const msg = $('fileMsg'); msg.innerHTML = '<div class="msg">Формирую файл…</div>';
   try {
-    let blob = await buildWorkbook(), name = fileName();
-    if (withPhotos) {
-      const z = await buildZip(blob, name, n => msg.innerHTML = `<div class="msg">Упаковываю фото… ${n}</div>`);
-      blob = z.blob; name = name.replace(/\.xlsx$/, '.zip');
-    }
+    const out = await buildExport(names, withPhotos, n => msg.innerHTML = `<div class="msg">Упаковываю фото… ${n}</div>`);
+    const blob = out.blob, name = out.name;
     if (share) {
       const file = new File([blob], name, { type: blob.type });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        try { await navigator.share({ files: [file], title: name }); msg.innerHTML = `<div class="msg ok">Отправлено: ${esc(name)}</div>`; return; }
+        try { await navigator.share({ files: [file], title: name }); msg.innerHTML = `<div class="msg ok">Отправлено: ${esc(name)}${out.files > 1 ? ` (${out.files} Excel)` : ''}</div>`; return; }
         catch (e) { if (e.name === 'AbortError') { msg.innerHTML = ''; return; } }
       }
     }
     download(blob, name);
-    msg.innerHTML = `<div class="msg ok">Сохранён файл ${esc(name)} (папка «Загрузки»)</div>`;
+    msg.innerHTML = `<div class="msg ok">Сохранён файл ${esc(name)}${out.files > 1 ? ` — внутри ${out.files} Excel по строениям` : ''} (папка «Загрузки»)</div>`;
   } catch (e) {
     console.error(e); msg.innerHTML = `<div class="msg bad">Ошибка выгрузки: ${esc(e.message)}</div>`;
   }
@@ -728,10 +766,30 @@ async function doImport(file) {
     if (!data.recs.length) { msg.innerHTML = '<div class="msg bad">В файле не найдено строк со счётчиками (нужна шапка «№ поз.» и листы Тепло/ГВС/ХВС).</div>'; return; }
     const cnt = RES.map(r => `${r}: ${data.recs.filter(x => x.res === r).length}`).join(', ');
     const filled = data.recs.filter(r => r.num).length;
-    if (S.recs.length && !await ask('Заменить данные?', `В приложении уже <b>${S.recs.length}</b> записей — они (и их фото) будут заменены данными из файла.<br><br>В файле: ${cnt}; с номерами ${filled}.<br><br>Совет: сначала сделайте «Резервную копию».`, 'Заменить')) { msg.innerHTML = ''; return; }
-    if (S.recs.some(r => r.photo)) await PDB.clear().catch(() => { });
-    S.recs = data.recs; S.channels = data.channels; S.ord = data.recs.length + 1;
-    if (data.addr) S.addr = data.addr;
+    const fileBlds = [...new Set(data.recs.map(bldNameOf))];
+    let append = false;
+    if (S.recs.length) {
+      const have = buildingNames(), overlap = fileBlds.filter(b => have.includes(b));
+      append = await ask('Загрузка списка',
+        `В приложении уже <b>${S.recs.length}</b> записей (строения: ${esc(have.map(b => b || 'без строения').join(', '))}).<br>` +
+        `В файле: ${cnt}; с номерами ${filled}; строения: ${esc(fileBlds.map(b => b || 'без строения').join(', '))}.<br><br>` +
+        `Добавить записи из файла к текущим?${overlap.length ? `<br><b>Внимание:</b> строения ${esc(overlap.join(', '))} уже есть — записи добавятся к ним.` : ''}`,
+        'Добавить', 'Нет');
+      if (!append && !await ask('Заменить всё?', `Все текущие записи (<b>${S.recs.length}</b>) и их фото будут удалены и заменены данными из файла.<br><br>Совет: сначала выгрузите Excel или сделайте «Резервную копию».`, 'Заменить всё')) { msg.innerHTML = ''; return; }
+    }
+    if (append) {
+      for (const r of data.recs) r.ord += S.ord;
+      S.recs = S.recs.concat(data.recs); S.ord += data.recs.length + 1;
+      if (data.channels.length && !S.channels.length) S.channels = data.channels;
+    } else {
+      if (S.recs.some(r => r.photo)) await PDB.clear().catch(() => { });
+      S.recs = data.recs; S.channels = data.channels; S.ord = data.recs.length + 1;
+      S.bldAddr = {};
+      if (data.addr) S.addr = data.addr;
+    }
+    // адрес из строки 1 файла запоминаем для его строений — он вернётся в строку 1 при выгрузке
+    S.bldAddr = S.bldAddr || {};
+    if (data.addr) for (const b of fileBlds) if (b && b !== data.addr) S.bldAddr[b] = data.addr;
     for (const b of data.blds) if (!S.blds.includes(b)) S.blds.push(b);
     for (const t of data.types) if (!S.types.includes(t)) S.types.push(t);
     S.sort = 'entry';

@@ -223,12 +223,15 @@ small.ver{display:block;text-align:center;color:var(--muted);margin:16px 0}
 <!-- ============ ФАЙЛ ============ -->
 <section class="view" id="v-file">
   <div class="card stack">
-    <label for="sAddr">Объект (адрес — строка 1 таблицы)</label>
+    <label for="sAddr">Адрес по умолчанию (для записей без строения)</label>
     <input id="sAddr" placeholder="г. Город, ул. Улица, д. 1">
     <label for="sWorker">Монтажник (для имени файла)</label>
     <input id="sWorker" placeholder="Фамилия">
   </div>
   <div class="card stack">
+    <label for="expBld">Что выгружать</label>
+    <select id="expBld"></select>
+    <div class="muted" id="expInfo"></div>
     <button class="pri" id="btnExportZip" style="width:100%">Выгрузить Excel + фото (ZIP) и отправить</button>
     <button id="btnExport" style="width:100%">Выгрузить только Excel и отправить</button>
     <button id="btnExportSave" style="width:100%">Сохранить Excel в загрузки</button>
