@@ -2,7 +2,7 @@
 /* Сбор счётчиков — веб-приложение для монтажника.
    Данные хранятся в localStorage телефона; выгрузка — Excel (ExcelJS) в формате «Таблица счётчиков». */
 
-const APP_VER = '1.5.1';
+const APP_VER = '1.6.0';
 const RES = ['Тепло', 'ГВС', 'ХВС', 'Электро'];
 const TABLE_NO = { 'Тепло': 1, 'ГВС': 2, 'ХВС': 3, 'Электро': 4 };
 const CHAN_TABLE_NO = 5;
@@ -17,7 +17,7 @@ const DEF = {
   types: ['Квартира', 'Офис', 'Ресторан', 'Фитнес', 'Мед.кабинет', 'МОП', 'ПУИ', 'С/У', 'Душевая'],
   // Электро: типы счётчиков разные (8–15 цифр) — по умолчанию без маски, любое число от 6 цифр
   masks: { 'Тепло': '########', 'ГВС': '##_#######?', 'ХВС': '##_#######?', 'Электро': '' },
-  pad: 3, sort: 'num', scanMode: 'auto',
+  pad: 3, sort: 'num', scanMode: 'auto', ocrEngine: 'paddle',
   bldAddr: {}, // строение → адрес для строки 1 Excel (из загруженного файла)
   recs: [], channels: [], ord: 0,
   cur: { res: 'Тепло', bld: 'Дом-Секция 1', type: 'Квартира', name: '001' },
@@ -562,8 +562,12 @@ function renderFile() {
   $('sBlds').value = S.blds.join('\n'); $('sTypes').value = S.types.join('\n');
   $('sPad').value = String(S.pad); $('sSort').value = S.sort;
   renderExpBld();
+  $('sEngine').value = S.ocrEngine || 'paddle';
   const ocr = localStorage.getItem('ocrReady');
-  $('verInfo').textContent = `Версия ${APP_VER} · записей ${S.recs.length} · распознавание: ${ocr ? 'загружено, работает без интернета' : 'ещё не загружено'}`;
+  const want = (S.ocrEngine || 'paddle') === 'paddle' ? 'paddle' : 'tesseract';
+  $('verInfo').textContent = `Версия ${APP_VER} · записей ${S.recs.length} · распознавание (${want === 'paddle' ? 'PaddleOCR' : 'Tesseract'}): ` +
+    (ocr === want || (want === 'tesseract' && ocr) ? 'загружено, работает без интернета' : 'ещё не загружено — откройте камеру один раз с интернетом') +
+    (paddleFailed ? ' · PaddleOCR не запустился на этом устройстве, используется Tesseract' : '');
 }
 function readSettings() {
   S.addr = $('sAddr').value.trim(); S.worker = $('sWorker').value.trim();
@@ -572,6 +576,7 @@ function readSettings() {
   S.blds = lines($('sBlds').value); if (!S.blds.length) S.blds = DEF.blds.slice();
   S.types = lines($('sTypes').value); if (!S.types.length) S.types = DEF.types.slice();
   S.pad = parseInt($('sPad').value, 10) || 0; S.sort = $('sSort').value;
+  S.ocrEngine = $('sEngine').value;
   save();
 }
 const safeName = s => String(s || '').replace(/[\\/:*?"<>|№,]+/g, ' ').replace(/\s+/g, '_').replace(/^_|_$/g, '').slice(0, 50);
@@ -819,7 +824,7 @@ function getOcr(progress) {
       logger: m => { if (progress && m.status && !/recogniz/.test(m.status)) progress(m); },
     });
     await w.setParameters({ tessedit_char_whitelist: '0123456789-_', tessedit_pageseg_mode: '6', user_defined_dpi: '300' });
-    try { localStorage.setItem('ocrReady', '1'); } catch (e) { }
+    try { if (!localStorage.getItem('ocrReady')) localStorage.setItem('ocrReady', 'tesseract'); } catch (e) { }
     ocrWorker = w; return w;
   })();
   ocrLoading.catch(() => { ocrLoading = null; });
@@ -896,15 +901,17 @@ function closeScanner() {
   stopStream(); $('scan').classList.remove('on'); $('frame').classList.remove('hit');
 }
 /* вырезаем область рамки из кадра и усиливаем контраст */
-function grabCrop() {
+/* ey > 1 — захват выше рамки (для наклонённой строки, которая выходит за рамку по высоте) */
+function grabCrop(stretch = true, targetH = 240, maxW = 2000, ey = 1) {
   const v = $('video'), f = $('frame');
   const vw = v.videoWidth, vh = v.videoHeight; if (!vw) return null;
   const vr = v.getBoundingClientRect(), fr = f.getBoundingClientRect();
   const sc = Math.max(vr.width / vw, vr.height / vh);
   const ox = (vr.width - vw * sc) / 2, oy = (vr.height - vh * sc) / 2;
   let sx = (fr.left - vr.left - ox) / sc, sy = (fr.top - vr.top - oy) / sc, sw = fr.width / sc, sh = fr.height / sc;
+  if (ey > 1) { sy -= sh * (ey - 1) / 2; sh *= ey; }
   sx = Math.max(0, sx); sy = Math.max(0, sy); sw = Math.min(vw - sx, sw); sh = Math.min(vh - sy, sh);
-  return preprocess(v, sx, sy, sw, sh, 240);
+  return preprocess(v, sx, sy, sw, sh, targetH, maxW, stretch);
 }
 /* мелкий шрифт номера надо увеличивать в 4–6 раз: при ×3 OCR путает 9 и 8 */
 function preprocess(src, sx, sy, sw, sh, targetH, maxW = 2000, stretch = true) {
@@ -926,8 +933,53 @@ function preprocess(src, sx, sy, sw, sh, targetH, maxW = 2000, stretch = true) {
   g.putImageData(img, 0, 0);
   return c;
 }
+/* ---- PaddleOCR (PP-OCRv4 на ONNX Runtime) — основной модуль; Tesseract — запасной ---- */
+let paddleFailed = false;
+const usePaddle = () => S.ocrEngine !== 'tesseract' && !paddleFailed && window.PaddleOCR && window.ort;
+async function getPaddle(progress) {
+  await PaddleOCR.load(new URL('./', location.href).href, (label, f) => progress && progress({ status: label, progress: f }));
+  try { localStorage.setItem('ocrReady', 'paddle'); } catch (e) { }
+  return PaddleOCR;
+}
+function rotCanvas(src, deg) {
+  const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
+  const g = c.getContext('2d'); g.fillStyle = '#808080'; g.fillRect(0, 0, c.width, c.height);
+  g.translate(c.width / 2, c.height / 2); g.rotate(deg * Math.PI / 180); g.drawImage(src, -src.width / 2, -src.height / 2);
+  return c;
+}
+/* строки с номером по формату и уверенность модели по ним */
+function paddleHits(r, res) {
+  let conf = 0;
+  for (const l of r.lines) if (extractNums(l.text, res).hits.length) conf = Math.max(conf, l.score);
+  return conf;
+}
+async function startPaddleLoop() {
+  ocrStatus('Наведите рамку на номер счётчика');
+  let n = 0, miss = 0;
+  const tick = async () => {
+    if (!SC.on || SC.paused || !useText()) return;
+    // если номер долго не находится — пробуем выпрямить наклонённую строку (±8°), захватив область выше рамки
+    const deg = miss >= 3 ? [0, -8, 8][n++ % 3] : 0;
+    let cv = deg ? grabCrop(false, 480, 1600, 2.6) : grabCrop(false, 240, 1600);
+    if (cv) {
+      if (deg) cv = rotCanvas(cv, deg);
+      try {
+        const r = await PaddleOCR.read(cv, { maxSide: 960, maxLines: 8 });
+        if (SC.on && !SC.paused) { const hit = onOcrText(r.text, paddleHits(r, SC.res)); miss = hit ? 0 : miss + 1; }
+      } catch (e) { console.warn(e); }
+    }
+    if (SC.on && !SC.paused) SC.ocrTimer = setTimeout(tick, 30);
+  };
+  tick();
+}
 async function startOcrLoop() {
   clearTimeout(SC.ocrTimer);
+  if (usePaddle()) {
+    try {
+      await getPaddle(m => ocrStatus(`Загрузка распознавания (${m.status})… ${m.progress ? Math.round(m.progress * 100) + '%' : ''}`));
+      return startPaddleLoop();
+    } catch (e) { console.warn('paddle', e); paddleFailed = true; ocrStatus('Модуль PaddleOCR не загрузился — работаю на Tesseract'); }
+  }
   let w;
   try {
     w = await getOcr(m => ocrStatus(`Загрузка распознавания… ${m.progress ? Math.round(m.progress * 100) + '%' : ''}`));
@@ -949,16 +1001,20 @@ async function startOcrLoop() {
   };
   tick();
 }
-function onOcrText(text) {
+/* conf — уверенность модели по строке с номером (PaddleOCR); при ≥0.95 хватает одного кадра,
+   иначе номер должен совпасть в двух кадрах */
+function onOcrText(text, conf = 0) {
   const ex = extractNums(text, SC.res);
   $('scanRaw').textContent = text.replace(/\s+/g, ' ').trim().slice(0, 60);
   SC.hist.push(ex.hits); if (SC.hist.length > 6) SC.hist.shift();
+  if (conf >= 0.95 && ex.hits.length === 1) { showResult(ex.hits[0], `Распознано по цифрам (${Math.round(conf * 100)}%)`, ex.all); return true; }
   const counts = new Map();
   for (const fr of SC.hist) for (const h of fr) counts.set(h, (counts.get(h) || 0) + 1);
   const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
   if (best && best[1] >= 2) showResult(best[0], 'Распознано по цифрам', ex.all);
   else if (ex.hits.length) { $('frame').classList.add('hit'); ocrStatus('Держите ровно… ' + ex.hits[0]); }
   else { $('frame').classList.remove('hit'); ocrStatus(ex.all.length ? 'Видно: ' + ex.all.slice(0, 3).join(', ') + ' — не по формату' : 'Наведите рамку на номер счётчика'); }
+  return ex.hits.length > 0;
 }
 async function startCodeLoop() {
   clearTimeout(SC.codeTimer);
@@ -1076,6 +1132,21 @@ async function recognizePhoto(file) {
     let found = [], all = [];
     const bd = await getBarcode();
     if (bd) { const r = await detectCodes(bd, bmp, res); found.push(...r.found); all.push(...r.all); }
+    if (!found.length && usePaddle()) {
+      try {
+        await getPaddle(m => box.innerHTML = `<div class="msg">Загрузка распознавания (${esc(m.status)})… ${m.progress ? Math.round(m.progress * 100) + '%' : ''}</div>`);
+        box.innerHTML = '<div class="msg">Распознаю фото…</div>';
+        const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+        const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+        c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+        for (const deg of [0, -7, 7]) { // наклонённый номер — повтор с поворотом
+          const r = await PaddleOCR.read(deg ? rotCanvas(c, deg) : c, { maxSide: 1280, maxLines: 40 });
+          const ex = extractNums(r.text, res); found.push(...ex.hits); all.push(...ex.all);
+          if (ex.hits.length) break;
+        }
+      } catch (e) { console.warn('paddle', e); paddleFailed = true; }
+    }
+    if (!found.length) { // запасной модуль
     const w = await getOcr(m => box.innerHTML = `<div class="msg">Загрузка распознавания… ${m.progress ? Math.round(m.progress * 100) + '%' : ''}</div>`);
     // весь снимок, без ограничения «только цифры»: так OCR находит строку «№ 20_3969714» среди надписей
     const k = Math.min(2400 / Math.max(bmp.width, bmp.height), 6);
@@ -1088,6 +1159,7 @@ async function recognizePhoto(file) {
         if (ex.hits.length) break;
       }
     } finally { await setWhitelist(w, true, '6'); }
+    }
     found = [...new Set(found)];
     const m = maskOf(res);
     const alts = [...new Set(all.map(d => applyMask(d, m)))].filter(x => !found.includes(x)).slice(0, 8);
@@ -1163,7 +1235,7 @@ function bind() {
   $('listTbl').onclick = e => { const tr = e.target.closest('tr[data-id]'); if (tr) openEdit(tr.dataset.id); };
   $('dlgEdit').addEventListener('close', closeEdit);
   // файл
-  ['sAddr', 'sWorker', 'sBlds', 'sTypes', 'sPad', 'sSort'].forEach(id => $(id).addEventListener('change', readSettings));
+  ['sAddr', 'sWorker', 'sBlds', 'sTypes', 'sPad', 'sSort', 'sEngine'].forEach(id => $(id).addEventListener('change', readSettings));
   $('maskBox').addEventListener('change', readSettings);
   $('btnExportZip').onclick = () => doExport(true, true);
   $('btnExport').onclick = () => doExport(true, false);
@@ -1205,8 +1277,11 @@ function init() {
   }
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) { }
   // при первом запуске с интернетом заранее скачиваем распознавание, чтобы на объекте работало без сети
-  if (!localStorage.getItem('ocrReady') && navigator.onLine && location.protocol !== 'file:') {
-    setTimeout(() => getOcr().then(() => { if (curView === 'file') renderFile(); }).catch(() => { }), 3000);
+  // при запуске с интернетом заранее скачиваем модуль распознавания, чтобы на объекте работало без сети
+  const want = usePaddle() ? 'paddle' : 'tesseract';
+  if (localStorage.getItem('ocrReady') !== want && navigator.onLine && location.protocol !== 'file:') {
+    setTimeout(() => (want === 'paddle' ? getPaddle() : getOcr()).then(() => { if (curView === 'file') renderFile(); })
+      .catch(e => { console.warn(e); if (want === 'paddle') paddleFailed = true; }), 3000);
   }
 }
 /* ---------------- пароль на вход ----------------

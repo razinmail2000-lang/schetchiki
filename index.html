@@ -266,6 +266,11 @@ small.ver{display:block;text-align:center;color:var(--muted);margin:16px 0}
     <textarea id="sBlds" rows="4"></textarea>
     <label for="sTypes">Типы мест (по одному в строке)</label>
     <textarea id="sTypes" rows="4"></textarea>
+    <label for="sEngine">Модуль распознавания цифр</label>
+    <select id="sEngine">
+      <option value="paddle">PaddleOCR — точнее (≈30 МБ, скачивается один раз)</option>
+      <option value="tesseract">Tesseract — легче (≈10 МБ), для слабых телефонов</option>
+    </select>
     <label for="sPad">Имя места: дополнять нулями до</label>
     <select id="sPad"><option value="0">не дополнять</option><option value="2">2 знаков</option><option value="3">3 знаков</option><option value="4">4 знаков</option></select>
     <label for="sSort">Порядок строк в выгрузке</label>
@@ -361,6 +366,8 @@ small.ver{display:block;text-align:center;color:var(--muted);margin:16px 0}
 
 <script src="lib/exceljs.min.js" defer></script>
 <script src="lib/jszip.min.js" defer></script>
+<script src="lib/ort/ort.wasm.min.js" defer></script>
+<script src="lib/paddle/paddle-ocr.js" defer></script>
 <script src="lib/tesseract/tesseract.min.js" defer></script>
 <script src="lib/zxing/barcode-ponyfill.js" defer></script>
 <script src="pass.js" defer></script>
