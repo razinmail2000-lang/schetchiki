@@ -2,7 +2,7 @@
 /* Сбор счётчиков — веб-приложение для монтажника.
    Данные хранятся в localStorage телефона; выгрузка — Excel (ExcelJS) в формате «Таблица счётчиков». */
 
-const APP_VER = '1.6.0';
+const APP_VER = '1.6.1';
 const RES = ['Тепло', 'ГВС', 'ХВС', 'Электро'];
 const TABLE_NO = { 'Тепло': 1, 'ГВС': 2, 'ХВС': 3, 'Электро': 4 };
 const CHAN_TABLE_NO = 5;
@@ -40,8 +40,9 @@ function load() {
 }
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); }
-  catch (e) { toast('Не удалось сохранить на телефоне: ' + e.message, 4000); }
+  catch (e) { toast('Не удалось сохранить на телефоне: ' + e.message, 6000); return false; }
   renderHeader();
+  return true;
 }
 
 /* ---------------- утилиты ---------------- */
@@ -95,7 +96,7 @@ function maskRe(m) {
 }
 /* для поиска в распознанном тексте: разделители маски могут быть прочитаны как _ - . пробел или пропущены */
 function looseRe(m) {
-  return new RegExp('(?<!\\d)' + m.split('').map(c => c === '#' ? '\\d' : c === '?' ? '\\d?' : '[ _\\-.:/]?').join('') + '(?!\\d)', 'g');
+  return new RegExp('(?<!\\d)' + m.split('').map(c => c === '#' ? '(\\d)' : c === '?' ? '(\\d?)' : /[ _\-.:/]/.test(c) ? '[ _\\-.:/]?' : reEsc(c)).join('') + '(?!\\d)', 'g');
 }
 function applyMask(digits, m) {
   if (!m || !fitsLen(digits, m)) return digits;
@@ -132,7 +133,7 @@ function extractNums(text, res) {
       if (d.length >= 4) groups.push(d);
     }
     if (m) for (const mm of line.matchAll(looseRe(m))) {
-      const d = mm[0].replace(/\D/g, '');
+      const d = mm.slice(1).join('');
       if (fitsLen(d, m) && !looksLikeReading(d)) hits.push(applyMask(d, m));
     }
   }
@@ -346,10 +347,7 @@ function stepName(delta) {
   onNameChanged();
 }
 function onNameChanged() {
-  const name = padName($('inName').value), type = $('inType').value.trim() || 'Квартира';
-  // если это место уже встречалось (в любом ресурсе) — подставляем его строение
-  const known = S.recs.find(r => r.name === name && r.type === type && r.res === S.cur.res) || S.recs.find(r => r.name === name && r.type === type);
-  if (known && known.bld && known.bld !== glueBld($('inBld').value, $('inSec').value)) setBldFields(known.bld);
+  // Номера квартир повторяются в разных домах и секциях. Выбранное строение сохраняем.
   syncCur(); renderPlace();
 }
 function gotoSlot(r) {
@@ -379,6 +377,7 @@ async function saveCurrent(advance) {
   if (!fitsMask(num, p.res) && !await ask('Формат номера', `Номер <b>${esc(num)}</b> не соответствует формату <b>${esc(maskOf(p.res))}</b>. Всё равно сохранить?`, 'Сохранить')) return;
   const dup = S.recs.find(r => r.num === num);
   if (dup && !await ask('Повтор номера', `Номер <b>${esc(num)}</b> уже записан:<br>${esc(dup.res)}, ${esc(placeLabel(dup))}, ${esc(dup.bld)}.<br><br>Сохранить ещё раз?`, 'Сохранить повтор')) return;
+  const beforeState = JSON.parse(JSON.stringify(S));
   if (!S.types.includes(p.type)) S.types.push(p.type);
   const k = placeKey(p);
   const slot = sortRecs(S.recs.filter(r => placeKey(r) === k && !r.num))[0];
@@ -396,12 +395,16 @@ async function saveCurrent(advance) {
   let photoMsg = '';
   if (pending) {
     try { await PDB.put(rec.id, await stampPhoto(pending.blob, rec)); rec.photo = 1; photoMsg = ' + фото'; }
-    catch (e) { photoMsg = ' (фото НЕ сохранено: ' + e.message + ')'; }
-    setPending(null);
+    catch (e) { S = beforeState; toast('Запись и фото не сохранены: ' + e.message + '. Повторите сохранение.', 6000); return; }
   }
   Object.assign(S.cur, p);
+  if (!save()) {
+    S = beforeState;
+    if (pending && !(before && before.photo)) PDB.del(rec.id).catch(() => { });
+    return;
+  }
+  setPending(null);
   $('inNum').value = ''; delete $('inNum').dataset.src; $('numMsg').innerHTML = '';
-  save();
   const savedId = rec.id;
   toastUndo(`Сохранено: ${placeLabel(p)} — ${num}${photoMsg}`, () => {
     const r = S.recs.find(x => x.id === savedId);
@@ -503,11 +506,13 @@ function rerender() { if (curView === 'list') renderList(); else renderInput(); 
 /* удаление / очистка — сразу, с возможностью отменить */
 async function removeRec(r, clearOnly) {
   const blob = r.photo ? await PDB.get(r.id).catch(() => null) : null;
+  const beforeState = JSON.parse(JSON.stringify(S));
   const snap = Object.assign({}, r), idx = S.recs.indexOf(r);
   if (clearOnly) { r.num = ''; r.src = ''; r.ts = 0; delete r.photo; }
   else S.recs.splice(idx, 1);
+  if (!save()) { S = beforeState; return; }
   if (snap.photo) PDB.del(r.id).catch(() => { });
-  save(); rerender();
+  rerender();
   toastUndo(`${clearOnly ? 'Номер очищен' : 'Удалено'}: ${snap.res}, ${placeLabel(snap)} ${snap.num || ''}`, async () => {
     if (clearOnly) Object.assign(S.recs.find(x => x.id === snap.id) || {}, snap);
     else S.recs.splice(Math.min(idx, S.recs.length), 0, snap);
@@ -525,6 +530,12 @@ async function closeEdit() {
   } else if (rv === 'clear') {
     await removeRec(r, true); return;
   } else if (rv === 'ok') {
+    const beforeState = JSON.parse(JSON.stringify(S)), draft = editDraft();
+    let oldPhoto = null;
+    if (shot && r.photo) {
+      try { oldPhoto = await PDB.get(r.id); }
+      catch (e) { reopenEdit({ id: r.id, draft }, draft.num, shot); toast('Не удалось прочитать прежнее фото: ' + e.message, 6000); return; }
+    }
     const res = $('eRes').value;
     const num = normalizeNum($('eNum').value, res);
     const dup = num && S.recs.find(x => x.num === num && x.id !== r.id);
@@ -534,9 +545,17 @@ async function closeEdit() {
     Object.assign(r, { res, bld: glueBld(bn, $('eSec').value), type: $('eType').value.trim() || 'Квартира', name: padName($('eName').value), num });
     if (shot) {
       const b = await shot.catch(() => null);
-      if (b) { try { await PDB.put(r.id, await stampPhoto(b, r)); r.photo = 1; } catch (e) { toast('Фото не сохранено: ' + e.message, 4000); } }
+      if (b) { try { await PDB.put(r.id, await stampPhoto(b, r)); r.photo = 1; } catch (e) { S = beforeState; reopenEdit({ id: r.id, draft }, num, shot); toast('Запись и фото не сохранены: ' + e.message, 6000); return; } }
     }
-    save(); toast('Исправлено: ' + placeLabel(r) + ' — ' + (num || 'без номера'));
+    if (!save()) {
+      S = beforeState;
+      if (shot) {
+        try { if (oldPhoto) await PDB.put(r.id, oldPhoto); else await PDB.del(r.id); }
+        catch (e) { toast('Запись не сохранена. Не удалось восстановить прежнее фото: ' + e.message, 6000); }
+      }
+      reopenEdit({ id: r.id, draft }, num, shot); return;
+    }
+    toast('Исправлено: ' + placeLabel(r) + ' — ' + (num || 'без номера'));
   }
   rerender();
 }
@@ -651,7 +670,14 @@ async function buildWorkbook(recsAll = S.recs, bname = null) {
     });
   }
   const ws = setupSheet(wb, 'Каналы', `Таблица ${CHAN_TABLE_NO} — Каналы УСПД`, CHAN_HDR, addr);
-  S.channels.forEach((ch, i) => styleRow(ws, 4 + i, ch));
+  if (bname != null && buildingNames().length > 1 && S.channels.some(ch => !String(ch[5] || '').trim())) {
+    throw new Error('В листе «Каналы» есть строки без строения. Укажите строение в исходном Excel и загрузите его заново.');
+  }
+  const channels = bname == null ? S.channels : S.channels.filter(ch => {
+    const b = String(ch[5] || '').trim();
+    return b ? splitBld(b).name === bname : buildingNames().length <= 1;
+  });
+  channels.forEach((ch, i) => styleRow(ws, 4 + i, ch));
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
@@ -665,8 +691,8 @@ function download(blob, name) {
 async function addPhotos(dir, recs, used, progress, cnt) {
   for (const res of RES) {
     for (const r of sortRecs(recs.filter(x => x.res === res && x.photo))) {
-      const b = await PDB.get(r.id).catch(() => null);
-      if (!b) continue;
+      const b = await PDB.get(r.id);
+      if (!b) throw new Error('Не найдено фото: ' + photoBase(r) + '.jpg. Восстановите фото или выгрузите Excel без фото.');
       let base = photoBase(r); const k = used.get(base) || 0; used.set(base, k + 1);
       if (k) base += '_' + (k + 1);
       dir.file(base + '.jpg', b, { binary: true });
@@ -774,6 +800,8 @@ async function doImport(file) {
     const cnt = RES.map(r => `${r}: ${data.recs.filter(x => x.res === r).length}`).join(', ');
     const filled = data.recs.filter(r => r.num).length;
     const fileBlds = [...new Set(data.recs.map(bldNameOf))];
+    if (fileBlds.length === 1) for (const ch of data.channels) if (!String(ch[5] || '').trim()) ch[5] = fileBlds[0];
+    const beforeState = JSON.parse(JSON.stringify(S));
     let append = false;
     if (S.recs.length) {
       const have = buildingNames(), overlap = fileBlds.filter(b => have.includes(b));
@@ -787,9 +815,8 @@ async function doImport(file) {
     if (append) {
       for (const r of data.recs) r.ord += S.ord;
       S.recs = S.recs.concat(data.recs); S.ord += data.recs.length + 1;
-      if (data.channels.length && !S.channels.length) S.channels = data.channels;
+      S.channels = S.channels.concat(data.channels);
     } else {
-      if (S.recs.some(r => r.photo)) await PDB.clear().catch(() => { });
       S.recs = data.recs; S.channels = data.channels; S.ord = data.recs.length + 1;
       S.bldAddr = {};
       if (data.addr) S.addr = data.addr;
@@ -802,7 +829,9 @@ async function doImport(file) {
     S.sort = 'entry';
     const firstEmpty = data.recs.find(r => !r.num) || data.recs[0];
     S.cur = { res: firstEmpty.res, bld: firstEmpty.bld, type: firstEmpty.type, name: firstEmpty.name };
-    save(); renderFile();
+    if (!save()) { S = beforeState; msg.innerHTML = '<div class="msg bad">Файл не загружен: не удалось сохранить данные на телефоне. Прежние записи и фото сохранены.</div>'; return; }
+    if (!append && beforeState.recs.some(r => r.photo)) await PDB.clear().catch(() => { });
+    renderFile();
     msg.innerHTML = `<div class="msg ok">Загружено ${data.recs.length} строк (${cnt}); уже с номерами: ${filled}. Порядок строк — как в файле.</div>`;
   } catch (e) {
     console.error(e); msg.innerHTML = `<div class="msg bad">Не удалось прочитать файл: ${esc(e.message)}</div>`;
@@ -811,11 +840,13 @@ async function doImport(file) {
 
 /* ---------------- РАСПОЗНАВАНИЕ ---------------- */
 let ocrWorker = null, ocrLoading = null, barcode;
+let swReady = Promise.resolve();
 function ocrStatus(t) { const el = $('scanStatus'); if (el) el.textContent = t; }
 function getOcr(progress) {
   if (ocrWorker) return Promise.resolve(ocrWorker);
   if (ocrLoading) return ocrLoading;
   ocrLoading = (async () => {
+    await swReady;
     const w = await Tesseract.createWorker('eng', 1, {
       workerPath: abs('lib/tesseract/worker.min.js'),
       corePath: abs('lib/tesseract/core'),
@@ -937,6 +968,7 @@ function preprocess(src, sx, sy, sw, sh, targetH, maxW = 2000, stretch = true) {
 let paddleFailed = false;
 const usePaddle = () => S.ocrEngine !== 'tesseract' && !paddleFailed && window.PaddleOCR && window.ort;
 async function getPaddle(progress) {
+  await swReady;
   await PaddleOCR.load(new URL('./', location.href).href, (label, f) => progress && progress({ status: label, progress: f }));
   try { localStorage.setItem('ocrReady', 'paddle'); } catch (e) { }
   return PaddleOCR;
@@ -1253,7 +1285,10 @@ function bind() {
       const s = JSON.parse(await f.text());
       if (!Array.isArray(s.recs)) throw new Error('это не резервная копия приложения');
       if (!await ask('Восстановить?', `Текущие данные (${S.recs.length} записей) будут заменены копией (${s.recs.length} записей).`, 'Восстановить')) return;
-      S = Object.assign(JSON.parse(JSON.stringify(DEF)), s); save(); renderFile(); toast('Восстановлено');
+      const beforeState = S;
+      S = Object.assign(JSON.parse(JSON.stringify(DEF)), s);
+      if (!save()) { S = beforeState; return; }
+      renderFile(); toast('Восстановлено');
     } catch (er) { $('fileMsg').innerHTML = `<div class="msg bad">Ошибка: ${esc(er.message)}</div>`; }
   };
   $('btnLock').onclick = () => {
@@ -1263,7 +1298,10 @@ function bind() {
   };
   $('btnClear').onclick = async () => {
     if (!await ask('Очистить всё?', `Будут удалены все <b>${S.recs.length}</b> записей. Настройки сохранятся.<br>Перед этим лучше выгрузить Excel.`, 'Удалить всё')) return;
-    S.recs = []; S.channels = []; S.ord = 0; await PDB.clear().catch(() => { }); save(); renderFile(); toast('Данные и фото очищены');
+    const beforeState = JSON.parse(JSON.stringify(S));
+    S.recs = []; S.channels = []; S.ord = 0;
+    if (!save()) { S = beforeState; return; }
+    await PDB.clear().catch(() => { }); renderFile(); toast('Данные и фото очищены');
   };
 }
 
@@ -1273,7 +1311,12 @@ function init() {
   renderHeader();
   renderInput();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
+    swReady = navigator.serviceWorker.register('sw.js').then(async () => {
+      await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) await new Promise(resolve => {
+        navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
+      });
+    }).catch(e => console.warn('sw', e));
   }
   try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) { }
   // при первом запуске с интернетом заранее скачиваем распознавание, чтобы на объекте работало без сети
