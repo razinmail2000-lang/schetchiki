@@ -2,7 +2,7 @@
 /* Сбор счётчиков — веб-приложение для монтажника.
    Данные хранятся в localStorage телефона; выгрузка — Excel (ExcelJS) в формате «Таблица счётчиков». */
 
-const APP_VER = '1.6.1';
+const APP_VER = '1.7.0';
 const RES = ['Тепло', 'ГВС', 'ХВС', 'Электро'];
 const TABLE_NO = { 'Тепло': 1, 'ГВС': 2, 'ХВС': 3, 'Электро': 4 };
 const CHAN_TABLE_NO = 5;
@@ -15,12 +15,13 @@ const DEF = {
   addr: '', worker: '',
   blds: ['Дом'], // подсказки для поля «Строение» (адрес / ЖК); секция выбирается отдельно
   types: ['Квартира', 'Офис', 'Ресторан', 'Фитнес', 'Мед.кабинет', 'МОП', 'ПУИ', 'С/У', 'Душевая'],
+  meterTypes: [], // типы приборов учёта для ресурса «Электро»
   // Электро: типы счётчиков разные (8–15 цифр) — по умолчанию без маски, любое число от 6 цифр
   masks: { 'Тепло': '########', 'ГВС': '##_#######?', 'ХВС': '##_#######?', 'Электро': '' },
   pad: 3, sort: 'num', scanMode: 'auto', ocrEngine: 'paddle',
   bldAddr: {}, // строение → адрес для строки 1 Excel (из загруженного файла)
   recs: [], channels: [], ord: 0,
-  cur: { res: 'Тепло', bld: 'Дом-Секция 1', type: 'Квартира', name: '001' },
+  cur: { res: 'Тепло', bld: 'Дом-Секция 1', type: 'Квартира', name: '001', meterType: '' },
 };
 
 let S = load();
@@ -33,6 +34,7 @@ function load() {
       const st = Object.assign({}, DEF, s, { masks: Object.assign({}, DEF.masks, s.masks), cur: Object.assign({}, DEF.cur, s.cur) });
       for (const r of ['ГВС', 'ХВС']) if (st.masks[r] === '##_########') st.masks[r] = DEF.masks[r]; // Пульсар: после года 7 или 8 цифр
       st.blds = [...new Set((st.blds || []).map(b => splitBld(b).name).filter(Boolean))]; // старый формат «Дом-Секция 1» → «Дом»
+      st.meterTypes = normalizeMeterTypes([...(Array.isArray(st.meterTypes) ? st.meterTypes : []), ...st.recs.map(meterTypeOf)]);
       return st;
     }
   } catch (e) { console.warn(e); }
@@ -159,6 +161,33 @@ function dupMap() {
 }
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
+/* Тип ПУ хранится отдельно от типа места и используется только для электросчётчиков. */
+function meterTypeOf(r) { return r.res === 'Электро' ? String(r.meterType || '').trim() : ''; }
+function normalizeMeterTypes(items) { return [...new Set(items.map(x => String(x || '').trim()).filter(Boolean))]; }
+function allMeterTypes() { return normalizeMeterTypes([...(S.meterTypes || []), ...S.recs.map(meterTypeOf), S.cur.meterType || '']); }
+function rememberMeterType(value) {
+  if (value && !S.meterTypes.includes(value)) S.meterTypes.push(value);
+}
+function meterTypeNote(r) { const t = meterTypeOf(r); return t ? `<div class="muted">Тип ПУ: ${esc(t)}</div>` : ''; }
+function renderMeterTypes() {
+  fillSelect($('inMeterType'), allMeterTypes(), S.cur.meterType || '', '<option value="">Не указан</option>');
+  $('inMeterTypeBox').hidden = S.cur.res !== 'Электро';
+  $('meterTypeList').innerHTML = allMeterTypes().map(t => `<option value="${esc(t)}">`).join('');
+}
+function saveMeterTypes(notify = true) {
+  const before = S.meterTypes;
+  S.meterTypes = normalizeMeterTypes($('meterTypes').value.split(/\r?\n/));
+  if (!save()) { S.meterTypes = before; return false; }
+  $('meterTypes').value = S.meterTypes.join('\n');
+  renderMeterTypes();
+  if (notify) toast('Типы ПУ сохранены');
+  return true;
+}
+function renderEditMeterType() {
+  $('eMeterTypeBox').hidden = $('eRes').value !== 'Электро';
+  $('meterTypeList').innerHTML = allMeterTypes().map(t => `<option value="${esc(t)}">`).join('');
+}
+
 /* ---------------- ФОТО счётчиков (IndexedDB, ключ = id записи) ---------------- */
 const PDB = {
   db: null,
@@ -240,6 +269,7 @@ function renderHeader() {
 }
 let curView = 'input';
 function showView(v) {
+  if (curView === 'list' && v !== 'list' && !saveMeterTypes(false)) return;
   curView = v;
   document.querySelectorAll('.view').forEach(e => e.classList.toggle('on', e.id === 'v-' + v));
   document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
@@ -301,19 +331,20 @@ function renderInput() {
   $('typeList').innerHTML = S.types.map(t => `<option value="${esc(t)}">`).join('');
   $('inType').value = c.type;
   $('inName').value = c.name;
+  renderMeterTypes();
   $('inNum').placeholder = maskOf(c.res) ? 'формат ' + maskHint(maskOf(c.res)) : 'наведите камеру';
   renderPlace();
   renderRecent();
 }
 function curPlace() {
-  return { res: S.cur.res, bld: glueBld($('inBld').value, $('inSec').value), type: $('inType').value.trim() || 'Квартира', name: padName($('inName').value) };
+  return { res: S.cur.res, bld: glueBld($('inBld').value, $('inSec').value), type: $('inType').value.trim() || 'Квартира', name: padName($('inName').value), meterType: S.cur.res === 'Электро' ? $('inMeterType').value.trim() : '' };
 }
 function syncCur() { Object.assign(S.cur, curPlace()); save(); }
 function renderPlace() {
   const p = curPlace(), k = placeKey(p);
   const here = sortRecs(S.recs.filter(r => placeKey(r) === k));
   $('placeInfo').innerHTML = here.length
-    ? `<span class="muted" style="align-self:center">${esc(p.res)}, ${esc(placeLabel(p))}:</span>` + here.map(r => `<span class="chip ${r.num ? '' : 'empty'}" data-id="${r.id}">${esc(r.num || 'пусто')}${r.photo ? ' 📷' : ''} ✎</span>`).join('')
+    ? `<span class="muted" style="align-self:center">${esc(p.res)}, ${esc(placeLabel(p))}:</span>` + here.map(r => `<span class="chip ${r.num ? '' : 'empty'}" data-id="${r.id}">${esc(r.num || 'пусто')}${r.photo ? ' 📷' : ''} ✎${meterTypeNote(r)}</span>`).join('')
     : `<span class="muted">${esc(p.res)}, ${esc(placeLabel(p))}: счётчиков ещё нет</span>`;
   const all = S.recs.filter(r => r.res === p.res);
   const empty = all.filter(r => !r.num).length;
@@ -324,7 +355,7 @@ function renderPlace() {
 function renderRecent() {
   const last = S.recs.filter(r => r.num && r.ts).sort((a, b) => b.ts - a.ts).slice(0, 6);
   $('recentTbl').querySelector('tbody').innerHTML = last.length
-    ? last.map(r => `<tr data-id="${r.id}"><td>${esc(r.res)}</td><td>${esc(placeLabel(r))}</td><td class="muted">${esc(r.bld)}</td><td class="n">${esc(r.num)}</td></tr>`).join('')
+    ? last.map(r => `<tr data-id="${r.id}"><td>${esc(r.res)}</td><td>${esc(placeLabel(r))}</td><td class="muted">${esc(r.bld)}</td><td class="n">${esc(r.num)}${meterTypeNote(r)}</td></tr>`).join('')
     : '<tr><td class="muted">—</td></tr>';
 }
 function checkNumField() {
@@ -351,7 +382,7 @@ function onNameChanged() {
   syncCur(); renderPlace();
 }
 function gotoSlot(r) {
-  S.cur = { res: r.res, bld: r.bld, type: r.type || 'Квартира', name: r.name };
+  S.cur = { res: r.res, bld: r.bld, type: r.type || 'Квартира', name: r.name, meterType: meterTypeOf(r) || S.cur.meterType || '' };
   save(); renderInput();
 }
 function jumpEmpty(dir) {
@@ -379,17 +410,18 @@ async function saveCurrent(advance) {
   if (dup && !await ask('Повтор номера', `Номер <b>${esc(num)}</b> уже записан:<br>${esc(dup.res)}, ${esc(placeLabel(dup))}, ${esc(dup.bld)}.<br><br>Сохранить ещё раз?`, 'Сохранить повтор')) return;
   const beforeState = JSON.parse(JSON.stringify(S));
   if (!S.types.includes(p.type)) S.types.push(p.type);
+  rememberMeterType(p.meterType);
   const k = placeKey(p);
   const slot = sortRecs(S.recs.filter(r => placeKey(r) === k && !r.num))[0];
   const src = $('inNum').dataset.src || 'ручной';
   let rec = slot;
-  const before = slot ? { num: slot.num, src: slot.src, ts: slot.ts, photo: slot.photo } : null;
+  const before = slot ? { num: slot.num, src: slot.src, ts: slot.ts, photo: slot.photo, meterType: slot.meterType || '' } : null;
   if (slot) {
-    Object.assign(slot, { num, src, ts: Date.now() });
+    Object.assign(slot, { num, src, ts: Date.now(), meterType: p.meterType });
   } else {
     const same = S.recs.filter(r => placeKey(r) === k);
     const ord = same.length ? Math.max(...same.map(r => r.ord)) + 0.001 : ++S.ord;
-    rec = { id: newId(), res: p.res, pos: '', type: p.type, name: p.name, bld: p.bld, num, src, ts: Date.now(), ord };
+    rec = { id: newId(), res: p.res, pos: '', type: p.type, name: p.name, bld: p.bld, num, meterType: p.meterType, src, ts: Date.now(), ord };
     S.recs.push(rec);
   }
   let photoMsg = '';
@@ -411,7 +443,7 @@ async function saveCurrent(advance) {
     if (!r) return;
     if (before) Object.assign(r, before); else S.recs = S.recs.filter(x => x.id !== savedId);
     if (r.photo && !(before && before.photo)) { delete r.photo; PDB.del(savedId).catch(() => { }); }
-    S.cur = { res: p.res, bld: p.bld, type: p.type, name: p.name };
+    S.cur = { res: p.res, bld: p.bld, type: p.type, name: p.name, meterType: p.meterType };
     save(); renderInput();
     $('inNum').value = num; checkNumField();
     toast('Запись отменена — можно пересканировать');
@@ -430,6 +462,7 @@ async function saveCurrent(advance) {
 
 /* ---------------- СПИСОК ---------------- */
 function renderList() {
+  $('meterTypes').value = (S.meterTypes || []).join('\n');
   const dm = dupMap();
   $('stats').innerHTML = RES.map(res => {
     const all = S.recs.filter(r => r.res === res);
@@ -446,7 +479,7 @@ function renderList() {
   fb.value = bv;
   const q = $('fText').value.trim().toLowerCase(), st = $('fState').value;
   let list = S.recs.filter(r => (!fr.value || r.res === fr.value) && (!fb.value || r.bld === fb.value));
-  if (q) list = list.filter(r => (r.name + ' ' + r.type + ' ' + r.num).toLowerCase().includes(q));
+  if (q) list = list.filter(r => (r.name + ' ' + r.type + ' ' + r.num + ' ' + meterTypeOf(r)).toLowerCase().includes(q));
   if (st === 'empty') list = list.filter(r => !r.num);
   if (st === 'dup') list = list.filter(r => r.num && dm.get(r.num) > 1);
   if (st === 'bad') list = list.filter(r => r.num && !fitsMask(r.num, r.res));
@@ -454,7 +487,7 @@ function renderList() {
   const LIM = 400;
   $('listTbl').querySelector('tbody').innerHTML = list.slice(0, LIM).map(r => {
     const cls = !r.num ? 'emp' : (dm.get(r.num) > 1 ? 'dup' : '');
-    return `<tr data-id="${r.id}" class="${cls}"><td>${fr.value ? '' : `<span class="muted">${esc(r.res)}</span> `}${esc(placeLabel(r))}</td><td class="muted">${esc(r.bld)}</td><td class="n">${esc(r.num || 'пусто')}${r.num && !fitsMask(r.num, r.res) ? ' ⚠' : ''}${r.photo ? ' 📷' : ''}</td></tr>`;
+    return `<tr data-id="${r.id}" class="${cls}"><td>${fr.value ? '' : `<span class="muted">${esc(r.res)}</span> `}${esc(placeLabel(r))}</td><td class="muted">${esc(r.bld)}</td><td class="n">${esc(r.num || 'пусто')}${r.num && !fitsMask(r.num, r.res) ? ' ⚠' : ''}${r.photo ? ' 📷' : ''}${meterTypeNote(r)}</td></tr>`;
   }).join('') || '<tr><td colspan="3" class="muted">Нет записей</td></tr>';
   $('listMore').textContent = list.length > LIM ? `Показано ${LIM} из ${list.length} — уточните фильтр` : `${list.length} шт.`;
 }
@@ -463,6 +496,7 @@ function openEdit(id) {
   const r = S.recs.find(x => x.id === id); if (!r) return;
   editId = id;
   fillSelect($('eRes'), RES, r.res);
+  $('eMeterType').value = meterTypeOf(r); renderEditMeterType();
   fillBldList();
   const sb = splitBld(r.bld); $('eBld').value = sb.name; fillSec($('eSec'), sb.sec);
   $('eType').value = r.type; $('eName').value = r.name; $('eNum').value = r.num;
@@ -493,7 +527,7 @@ async function editTakePhoto(file) {
 }
 let editShot = null; // новый кадр после пересканирования из окна правки
 function editDraft() {
-  return { res: $('eRes').value, bld: glueBld($('eBld').value, $('eSec').value), type: $('eType').value, name: $('eName').value, num: $('eNum').value };
+  return { res: $('eRes').value, bld: glueBld($('eBld').value, $('eSec').value), type: $('eType').value, name: $('eName').value, num: $('eNum').value, meterType: $('eRes').value === 'Электро' ? $('eMeterType').value.trim() : '' };
 }
 function checkEditNum() {
   const res = $('eRes').value, n = normalizeNum($('eNum').value, res), msgs = [];
@@ -542,7 +576,8 @@ async function closeEdit() {
     if (dup && !await ask('Повтор номера', `Номер <b>${esc(num)}</b> уже есть: ${esc(dup.res)}, ${esc(placeLabel(dup))}. Сохранить?`, 'Сохранить')) return;
     if (num !== r.num) { r.ts = Date.now(); r.src = 'правка'; }
     const bn = $('eBld').value.trim(); if (bn && !S.blds.includes(bn)) S.blds.push(bn);
-    Object.assign(r, { res, bld: glueBld(bn, $('eSec').value), type: $('eType').value.trim() || 'Квартира', name: padName($('eName').value), num });
+    Object.assign(r, { res, bld: glueBld(bn, $('eSec').value), type: $('eType').value.trim() || 'Квартира', name: padName($('eName').value), num, meterType: draft.meterType });
+    rememberMeterType(r.meterType);
     if (shot) {
       const b = await shot.catch(() => null);
       if (b) { try { await PDB.put(r.id, await stampPhoto(b, r)); r.photo = 1; } catch (e) { S = beforeState; reopenEdit({ id: r.id, draft }, num, shot); toast('Запись и фото не сохранены: ' + e.message, 6000); return; } }
@@ -570,6 +605,7 @@ function reopenEdit(target, num, shot) {
   const sb = splitBld(t.bld);
   $('eRes').value = t.res; $('eBld').value = sb.name; fillSec($('eSec'), sb.sec); $('eType').value = t.type; $('eName').value = t.name;
   $('eNum').value = num != null ? normalizeNum(num, t.res) : t.num;
+  $('eMeterType').value = t.meterType || ''; renderEditMeterType();
   if (shot) editShot = shot;
   checkEditNum();
 }
@@ -626,10 +662,10 @@ function setupSheet(wb, name, title, header, addr) {
     views: [{ state: 'frozen', ySplit: 3 }],
     pageSetup: { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true, printTitlesRow: '3:3', margins: { left: 0.5, right: 0.5, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 } },
   });
-  ws.columns = WIDTHS.map(w => ({ width: w }));
-  ws.mergeCells('A1:F1');
+  ws.columns = header.map((_, i) => ({ width: WIDTHS[i] || 26 }));
+  ws.mergeCells(1, 1, 1, header.length);
   Object.assign(ws.getCell('A1'), { value: addr || '', font: { name: FONT, size: 12, bold: true }, alignment: { horizontal: 'center', vertical: 'middle' } });
-  ws.mergeCells('A2:F2');
+  ws.mergeCells(2, 1, 2, header.length);
   Object.assign(ws.getCell('A2'), { value: title, font: { name: FONT, size: 12, bold: true }, alignment: { horizontal: 'left', vertical: 'middle' } });
   const hr = ws.getRow(3); hr.height = 30;
   header.forEach((h, i) => Object.assign(hr.getCell(i + 1), {
@@ -640,7 +676,7 @@ function setupSheet(wb, name, title, header, addr) {
 }
 function styleRow(ws, r, vals) {
   const row = ws.getRow(r);
-  for (let c = 1; c <= 6; c++) {
+  for (let c = 1; c <= ws.columnCount; c++) {
     const cell = row.getCell(c);
     if (vals && vals[c - 1] != null) cell.value = String(vals[c - 1]);
     cell.font = { name: FONT, size: 11 }; cell.alignment = CENTER; cell.border = BORDER; cell.numFmt = '@';
@@ -652,7 +688,8 @@ async function buildWorkbook(recsAll = S.recs, bname = null) {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Сбор счётчиков ' + APP_VER; wb.created = new Date();
   for (const res of RES) {
-    const ws = setupSheet(wb, res, `Таблица ${TABLE_NO[res]} — ${res}`, METER_HDR, addr);
+    const header = res === 'Электро' ? [...METER_HDR, 'Тип ПУ'] : METER_HDR;
+    const ws = setupSheet(wb, res, `Таблица ${TABLE_NO[res]} — ${res}`, header, addr);
     const recs = sortRecs(recsAll.filter(x => x.res === res));
     const groups = [];
     for (const x of recs) {
@@ -663,7 +700,11 @@ async function buildWorkbook(recsAll = S.recs, bname = null) {
     let r = 4;
     groups.forEach((g, gi) => {
       const r0 = r;
-      for (const x of g.items) { styleRow(ws, r, [null, null, x.name, x.res, x.num || '', x.bld]); r++; }
+      for (const x of g.items) {
+        const vals = [null, null, x.name, x.res, x.num || '', x.bld];
+        if (res === 'Электро') vals.push(meterTypeOf(x));
+        styleRow(ws, r, vals); r++;
+      }
       ws.getCell(r0, 1).value = usePos ? String(g.items[0].pos) : String(gi + 1);
       ws.getCell(r0, 2).value = g.items[0].type;
       if (r - r0 > 1) { ws.mergeCells(r0, 1, r - 1, 1); ws.mergeCells(r0, 2, r - 1, 2); }
@@ -773,6 +814,7 @@ async function parseWorkbook(buf) {
     for (let r = 1; r <= Math.min(12, ws.rowCount); r++) if (cellText(ws, r, 1).startsWith('№')) { hdr = r; break; }
     if (!hdr) return;
     const isChan = /канал/i.test(cellText(ws, hdr, 1));
+    const meterTypeCol = Array.from({ length: ws.columnCount }, (_, i) => i + 1).find(c => /^тип\s*пу$/i.test(cellText(ws, hdr, c))) || 0;
     if (hdr > 1 && !addr) { const a = cellText(ws, 1, 1); if (a && a !== 'Адрес объекта') addr = a; }
     const title = [ws.name, ...Array.from({ length: hdr - 1 }, (_, i) => cellText(ws, i + 1, 1))].join(' ');
     const sheetRes = RES.find(x => new RegExp('(^|[^А-ЯЁа-яё])' + x + '([^А-ЯЁа-яё]|$)').test(title)) || '';
@@ -783,6 +825,7 @@ async function parseWorkbook(buf) {
       const res = sheetRes || RES.find(x => x === v[3]) || v[3];
       if (!RES.includes(res)) continue;
       const rec = { id: newId(), res, pos: v[0], type: v[1] || 'Квартира', name: padName(v[2]), bld: v[5], num: v[4].replace(/\s+/g, ''), src: v[4] ? 'import' : '', ts: 0, ord: ++ord };
+      rec.meterType = res === 'Электро' && meterTypeCol ? cellText(ws, r, meterTypeCol) : '';
       if (!rec.name && !rec.num) continue;
       if (rec.bld) { const n = splitBld(rec.bld).name; if (n) blds.add(n); }
       if (rec.type) types.add(rec.type);
@@ -826,9 +869,10 @@ async function doImport(file) {
     if (data.addr) for (const b of fileBlds) if (b && b !== data.addr) S.bldAddr[b] = data.addr;
     for (const b of data.blds) if (!S.blds.includes(b)) S.blds.push(b);
     for (const t of data.types) if (!S.types.includes(t)) S.types.push(t);
+    for (const r of data.recs) rememberMeterType(meterTypeOf(r));
     S.sort = 'entry';
     const firstEmpty = data.recs.find(r => !r.num) || data.recs[0];
-    S.cur = { res: firstEmpty.res, bld: firstEmpty.bld, type: firstEmpty.type, name: firstEmpty.name };
+    S.cur = { res: firstEmpty.res, bld: firstEmpty.bld, type: firstEmpty.type, name: firstEmpty.name, meterType: meterTypeOf(firstEmpty) };
     if (!save()) { S = beforeState; msg.innerHTML = '<div class="msg bad">Файл не загружен: не удалось сохранить данные на телефоне. Прежние записи и фото сохранены.</div>'; return; }
     if (!append && beforeState.recs.some(r => r.photo)) await PDB.clear().catch(() => { });
     renderFile();
@@ -1215,6 +1259,7 @@ function bind() {
   $('secDec').onclick = () => stepSec(-1);
   $('secInc').onclick = () => stepSec(1);
   $('inType').onchange = () => { syncCur(); renderPlace(); };
+  $('inMeterType').onchange = syncCur;
   $('inName').onchange = onNameChanged;
   $('inName').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); $('inName').blur(); } };
   $('nameDec').onclick = () => stepName(-1);
@@ -1240,7 +1285,7 @@ function bind() {
   $('eRescan').onclick = editRescan;
   $('eClear').onclick = () => $('dlgEdit').close('clear');
   $('eNum').oninput = checkEditNum;
-  $('eRes').onchange = checkEditNum;
+  $('eRes').onchange = () => { renderEditMeterType(); checkEditNum(); };
   $('btnPhoto').onclick = () => { syncCur(); $('photoInput').click(); };
   $('photoInput').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) recognizePhoto(f); };
   $('recentTbl').onclick = e => { const tr = e.target.closest('tr[data-id]'); if (tr) openEdit(tr.dataset.id); };
@@ -1262,6 +1307,8 @@ function bind() {
   $('scanZoom').oninput = e => { try { SC.track.applyConstraints({ advanced: [{ zoom: +e.target.value }] }); } catch (er) { } };
   document.addEventListener('visibilitychange', () => { if (document.hidden && SC.on) cancelScanner(); });
   // список
+  $('btnMeterTypes').onclick = () => saveMeterTypes();
+  $('meterTypes').onchange = () => saveMeterTypes(false);
   ['fRes', 'fBld', 'fState'].forEach(id => $(id).onchange = renderList);
   $('fText').oninput = renderList;
   $('listTbl').onclick = e => { const tr = e.target.closest('tr[data-id]'); if (tr) openEdit(tr.dataset.id); };
@@ -1287,6 +1334,8 @@ function bind() {
       if (!await ask('Восстановить?', `Текущие данные (${S.recs.length} записей) будут заменены копией (${s.recs.length} записей).`, 'Восстановить')) return;
       const beforeState = S;
       S = Object.assign(JSON.parse(JSON.stringify(DEF)), s);
+      S.cur = Object.assign({}, DEF.cur, S.cur);
+      S.meterTypes = normalizeMeterTypes([...(Array.isArray(S.meterTypes) ? S.meterTypes : []), ...S.recs.map(meterTypeOf)]);
       if (!save()) { S = beforeState; return; }
       renderFile(); toast('Восстановлено');
     } catch (er) { $('fileMsg').innerHTML = `<div class="msg bad">Ошибка: ${esc(er.message)}</div>`; }

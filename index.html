@@ -179,6 +179,11 @@ small.ver{display:block;text-align:center;color:var(--muted);margin:16px 0}
         </div>
       </div>
     </div>
+    <div id="inMeterTypeBox" hidden>
+      <label for="inMeterType">Тип ПУ (тип прибора учёта)</label>
+      <select id="inMeterType"></select>
+      <div class="muted" style="margin-top:6px">Добавить типы можно во вкладке «Список».</div>
+    </div>
     <div id="placeInfo" class="chips"></div>
     <div class="slot">
       <button id="prevEmpty" class="fix">◀ пустой</button>
@@ -213,6 +218,12 @@ small.ver{display:block;text-align:center;color:var(--muted);margin:16px 0}
 
 <!-- ============ СПИСОК ============ -->
 <section class="view" id="v-list">
+  <div class="card">
+    <label for="meterTypes">Типы ПУ — Электро</label>
+    <div class="muted" style="margin-bottom:8px">Введите типы приборов учёта по одному в строке. Они появятся для выбора во вкладке «Ввод» при выборе ресурса «Электро».</div>
+    <textarea id="meterTypes" rows="3" placeholder="Например: Меркурий 230&#10;Энергомера CE301"></textarea>
+    <button id="btnMeterTypes" style="width:100%;margin-top:8px">Сохранить типы ПУ</button>
+  </div>
   <div class="card">
     <div class="stats" id="stats"></div>
   </div>
@@ -326,6 +337,11 @@ small.ver{display:block;text-align:center;color:var(--muted);margin:16px 0}
 <dialog id="dlgEdit"><form method="dialog" class="in">
   <h3>Запись</h3>
   <label>Ресурс</label><select id="eRes"></select>
+  <div id="eMeterTypeBox" hidden>
+    <label for="eMeterType">Тип ПУ (тип прибора учёта)</label>
+    <input id="eMeterType" list="meterTypeList" autocomplete="off" placeholder="Выберите или введите тип">
+    <datalist id="meterTypeList"></datalist>
+  </div>
   <div class="row">
     <div><label>Строение (адрес / ЖК)</label><input id="eBld" list="bldList" autocomplete="off"></div>
     <div class="fix" style="width:34%"><label>Секция</label><select id="eSec"></select></div>
